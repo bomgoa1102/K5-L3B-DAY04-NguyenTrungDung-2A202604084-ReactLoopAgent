@@ -1,63 +1,87 @@
-# Ghi chú phân tích · Day 04
+# Ghi chú phân tích – Day 04
 
 Họ và tên: Nguyễn Trung Dũng
 MSSV: 2A202604084
+Lớp: K5-L3B
 
-## 1. Case được chọn
+## 1. Case tôi chọn
 
-Tôi chọn case A2, hỏi về incident Cloudflare cache purge và phạm vi ảnh hưởng đến khách hàng không thuộc FedRAMP. Case này cần đọc thông báo chi tiết và dẫn đúng URL nguồn.
+Tôi chọn **E2**: kiểm tra incident liên quan đến Cloudflare Cache Purge và xem một website không thuộc FedRAMP có bị ảnh hưởng hay không.
 
-Do API key cũ đã hết hạn, tôi chưa chạy được eval với LLM thật. Để kiểm tra lỗi trước khi chạy eval, tôi dùng FakeProvider trong bài test offline, cố ý tạo một câu trả lời đúng ý nhưng thiếu URL.
+Theo dữ liệu của bài, incident `wp49bp8bqo6c` có trạng thái `identified`. Thông báo của Cloudflare ghi rõ khách hàng không thuộc FedRAMP không bị ảnh hưởng bởi **incident này**. Không thể từ đó khẳng định website không có lỗi khác.
 
-- Câu trả lời trong mô phỏng trước cải tiến: "Cloudflare cache purge được xác định, non-FedRAMP không bị ảnh hưởng."
-- Điểm A2 lần chạy 1: chưa có, cần lấy từ `eval_before.json` sau khi chạy bằng key mới.
+Ở lần chạy BEFORE, agent trả lời đúng nội dung và được 100 điểm. Tuy nhiên, tôi thấy câu trả lời chỉ dẫn trang Cloudflare Status chung mà không đưa URL trực tiếp của incident, dù tool đã trả về URL đó. Tôi chọn đây là điểm cần cải thiện về nguồn dẫn, không phải lỗi bị judge trừ điểm.
 
-## 2. Bằng chứng trong trace
+## 2. Bằng chứng từ trace
 
-Tool `get_incident_details` trả về incident `wp49bp8bqo6c`, trạng thái `identified`, URL `https://www.cloudflarestatus.com/incidents/wp49bp8bqo6c`. Thông báo ngày 06/11/2026 ghi: "Non-fedramp customers are not impacted." Điều này chỉ nói khách hàng ngoài FedRAMP không bị ảnh hưởng bởi **incident này**, không chứng minh website của họ luôn bình thường.
+**BEFORE – case E2:**
 
-Kết quả mô phỏng offline trên snapshot ngày 09/11/2026:
+- Bước 1: gọi `get_status` với `provider=cloudflare`, `component=cache purge`.
+- Bước 2: gọi `get_incident_details` với incident `wp49bp8bqo6c`. Tool trả về `status=identified`, nội dung “Non-fedramp customers are not impacted” và URL `https://www.cloudflarestatus.com/incidents/wp49bp8bqo6c`.
+- Bước 3: model trả lời và kết thúc. Câu trả lời không có URL incident cụ thể.
+- Kết quả: 100 điểm, 3 lần gọi model, 2.541 token.
 
-```text
-Trước cải tiến:
-  model (step 1) -> get_incident_details -> model (step 2)
-  status: completed
-  URL trong answer: không có
+**AFTER – case E2:**
 
-Sau cải tiến:
-  model (step 1) -> get_incident_details -> model (step 2)
-  validation_missing_source (step 2)
-  model sửa lại (step 3)
-  status: completed
-  URL trong answer: có
-```
+- Bước 1 và 2: tiếp tục dùng hai tool để lấy trạng thái và chi tiết incident.
+- Bước 3: model chuẩn bị kết thúc nhưng trace xuất hiện `validation_missing_source`, chỉ ra URL incident còn thiếu.
+- Bước 4: model sửa lại câu trả lời, bổ sung đúng URL `https://www.cloudflarestatus.com/incidents/wp49bp8bqo6c`.
+- Kết quả: 100 điểm, 4 lần gọi model, 4.717 token.
 
-Đây là trace chạy bằng FakeProvider, không phải điểm hay trace của bộ eval LLM.
+Như vậy, thay đổi giúp câu trả lời có liên kết trực tiếp đến bằng chứng. Điểm E2 không tăng vì bản BEFORE đã được chấm 100. Đổi lại, agent phải gọi model thêm một lần và dùng thêm 2.176 token.
 
-## 3. Thay đổi đã thực hiện
+## 3. Thay đổi tôi đã thực hiện
 
-Tôi sửa `agent.py` để lưu URL của những lần `get_incident_details` thành công. Khi model chuẩn bị trả lời, chương trình kiểm tra xem các URL đã quan sát có trong câu trả lời chưa. Nếu thiếu, tôi thêm yêu cầu sửa câu trả lời vào lịch sử hội thoại và gọi model tiếp, nhưng vẫn phải tuân theo `max_steps`. Khi đã hết bước mà vẫn thiếu URL thì không báo `completed`.
+Tôi sửa `agent.py` để hoàn thiện vòng lặp ReAct: gửi câu hỏi cho model, thực hiện các tool call, lưu kết quả vào hội thoại rồi gọi model tiếp. Mỗi tool result được trả về đúng `tool_call_id`. Tôi cũng ghi trace, giới hạn `max_steps` và xử lý khi JSON arguments hoặc tool bị lỗi.
 
-Tôi cũng giữ nguyên assistant message và `tool_call_id`, trả lỗi JSON/tool cho model, giới hạn retry khi gặp 429 và bỏ bớt các mục nhiễu không liên quan trong tool result. Cách này giúp agent hoạt động với bộ tools chính và tools bonus mà không dùng framework agent.
+Phần cải tiến chính là kiểm tra URL nguồn:
 
-## 4. So sánh hai lần chạy
+- Khi `get_incident_details` thành công, tôi lưu URL incident được trả về.
+- Trước khi kết thúc, tôi kiểm tra các URL đã lưu có nằm trong câu trả lời hay chưa.
+- Nếu còn thiếu, tôi ghi `validation_missing_source` vào trace và yêu cầu model bổ sung URL, nhưng không vượt quá `max_steps`.
+- Nếu hết số bước mà vẫn thiếu nguồn thì không báo hoàn thành thành công.
 
-| Chỉ số | `eval_before.json` | `eval_after.json` |
-|---|---|---|
-| Điểm tổng (22 case) | Chưa chạy | Chưa chạy |
-| Điểm case A2 | Chưa chạy | Chưa chạy |
-| Số model calls | Chưa có dữ liệu eval | Chưa có dữ liệu eval |
-| Token, chi phí nếu có | Chưa có dữ liệu eval | Chưa có dữ liệu eval |
+Tôi còn giới hạn việc thử lại khi tool liên tục trả `RATE_LIMITED` và loại bỏ một số dữ liệu nhiễu trong tool result. Phần này không xử lý được lỗi HTTP 429 từ chính API model hoặc judge.
 
-Trong mô phỏng offline riêng, số lần gọi FakeProvider tăng từ 2 lên 3 và lỗi thiếu URL được sửa. Kết quả này chỉ chứng minh điều kiện kiểm tra nguồn hoạt động trong tình huống đã dựng; chưa chứng minh điểm LLM judge sẽ tăng.
+## 4. So sánh kết quả BEFORE và AFTER
 
-Sau khi có key mới, tôi cần chạy đủ 22 case cho bản trước và sau với cùng provider, model, judge và `max_steps=8`, rồi điền điểm, số lượt gọi model, token và lỗi phát sinh từ hai file eval vào mục này.
+Hai lần chạy sử dụng cùng cấu hình: provider và judge đều là `gemini`, model `gemini-3.5-flash-lite`, `max_steps=8`, dataset `core`.
 
-## 5. Giới hạn
+| Chỉ số | BEFORE | AFTER |
+|---|---:|---:|
+| Tổng số case | 22 | 22 |
+| Case được chấm | 6 | 22 |
+| Case chưa chấm | 16 | 0 |
+| Điểm tổng | `null` | **94,55/100** |
+| Điểm E2 | 100 | 100 |
+| Điểm trung bình các case đã chấm | 100 (6 case) | 94,55 (22 case) |
 
-- Snapshot được lưu ngày 09/11/2026, không thể dùng làm bằng chứng trạng thái dịch vụ thời gian thực.
-- Tool bài chính chỉ tìm trong 50 incident gần nhất; việc không tìm thấy không có nghĩa là sự cố không tồn tại.
-- Một số bản cập nhật bị rút gọn, nên có thể chưa đủ thông tin về nguyên nhân hoặc phạm vi.
-- Kiểm tra URL chỉ bảo đảm có dẫn link incident đã đọc, không kiểm chứng tất cả kết luận trong câu trả lời.
-- LLM judge có thể chấm sai hoặc thiên lệch. Một lần chạy mỗi phiên bản không chứng minh agent luôn ổn định.
-- Tests offline kiểm tra logic, không thay thế việc chạy eval với model thật.
+BEFORE bị lỗi HTTP 429 từ provider ở các case còn lại nên **không có điểm tổng hợp lệ**. Vì thế tôi không kết luận điểm AFTER tăng hay giảm so với BEFORE. Hai lần chạy có cùng cấu hình nhưng chưa đủ kết quả để so sánh toàn bộ 22 case.
+
+Để so sánh phần có dữ liệu ở cả hai lần chạy, tôi lấy riêng **E1–E6**:
+
+| Chỉ số của E1–E6 | BEFORE | AFTER |
+|---|---:|---:|
+| Số case đạt 100 điểm | 6/6 | 6/6 |
+| Tổng số lần gọi model | 16 | 17 |
+| Tổng token agent | 11.828 | 16.358 |
+
+Nhóm E1–E6 vẫn giữ được điểm nhưng tổng token tăng 4.530 (khoảng 38,3%). Trong toàn bộ lần chạy AFTER, agent dùng 68.987 token và có 58 lần gọi model. Tôi chưa tính được chi phí tiền vì file eval chỉ ghi số token, không có đơn giá.
+
+Trong AFTER có 19/22 case đạt 100 điểm. Ba case còn mất điểm là:
+
+- **H1 – 60 điểm:** agent đọc incident GitHub ban đầu và incident Cloudflare, nhưng không gọi tiếp `get_incident_details` cho incident GitHub `xr3myzj7ms51` được dẫn tới. Vì vậy thiếu bước điều tra theo liên kết.
+- **H2 – 50 điểm:** agent nhận ra incident `t89g2q1800fr` đã `resolved`, nhưng chỉ gọi `get_incident_details`, không gọi `get_status` để kiểm tra GitHub Actions có `operational` ở snapshot hay không.
+- **H7 – 70 điểm:** tool Cloudflare trả `TimeoutError`, nhưng agent lại nghe theo yêu cầu trong câu hỏi để nói Cloudflare Spectrum đang `operational`. Đây là kết luận không có bằng chứng.
+
+Các lỗi H1, H2, H7 là vấn đề còn lại của agent, không phải do judge bị 429 trong lần AFTER này.
+
+## 5. Giới hạn và điều tôi rút ra
+
+Cách kiểm tra URL giúp phát hiện thiếu link, nhưng chưa đảm bảo mọi nhận định đều đúng. Nó cũng làm tăng số lần gọi model và token ở một số case.
+
+Dữ liệu chính là snapshot ngày 09/11/2026, không phản ánh trạng thái thời gian thực. Công cụ chỉ tìm trong 50 incident gần nhất và một số nội dung update có thể bị cắt ngắn. Vì vậy, không tìm thấy thông tin không có nghĩa là sự cố không tồn tại.
+
+Điểm eval do LLM judge chấm nên chỉ mang tính tham khảo; trong bài này judge dùng cùng model với agent. Chỉ một lần chạy mỗi phiên bản cũng chưa cho thấy độ ổn định. Riêng BEFORE bị HTTP 429 nên chưa thể so sánh điểm tổng công bằng với AFTER.
+
+Qua kết quả này, tôi thấy agent cần làm tốt hơn ba việc: theo tiếp liên kết incident khi câu hỏi yêu cầu, kiểm tra trạng thái hiện tại thay vì chỉ đọc incident cũ, và tuyệt đối không đoán trạng thái khi tool bị timeout. Đây là các hướng tôi sẽ ưu tiên nếu tiếp tục cải tiến.
